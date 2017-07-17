@@ -2,11 +2,13 @@ package com.lwansbrough.RCTCamera;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Matrix;
+import android.graphics.RectF;
 import android.media.ExifInterface;
 import android.util.Base64;
 import android.util.Log;
-
+import android.view.Surface;
 import com.drew.imaging.ImageMetadataReader;
 import com.drew.imaging.ImageProcessingException;
 import com.drew.metadata.Directory;
@@ -15,7 +17,6 @@ import com.drew.metadata.MetadataException;
 import com.drew.metadata.Tag;
 import com.drew.metadata.exif.ExifIFD0Directory;
 import com.facebook.react.bridge.ReadableMap;
-
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -31,9 +32,60 @@ public class MutableImage {
     private Metadata originalImageMetaData;
     private boolean hasBeenReoriented = false;
 
-    public MutableImage(byte[] originalImageData) {
+    public MutableImage(byte[] originalImageData, int deviceOrientation) {
         this.originalImageData = originalImageData;
         this.currentRepresentation = toBitmap(originalImageData);
+
+        scaleImage(deviceOrientation);
+    }
+
+    private void scaleImage(int deviceOrientation) {
+        final int sourceWidth = this.currentRepresentation.getWidth();
+        final int sourceHeight = this.currentRepresentation.getHeight();
+        // Check device rotation
+        final boolean isLandscape = deviceOrientation != Surface.ROTATION_0
+            && deviceOrientation != Surface.ROTATION_180;
+
+        final float aspectRatio = isLandscape ? 16F / 9F : 9F / 16F;
+
+        int newWidth;
+        int newHeight;
+        if (sourceWidth * aspectRatio > sourceHeight) {
+            // Width should be smaller
+            newHeight = Math.min(sourceHeight, isLandscape ? 900 : 1600);
+            newWidth = (int) (newHeight * (1F / aspectRatio));
+        } else {
+            // Height should be smaller
+            newWidth = Math.min(sourceWidth, isLandscape ? 1600 : 900);
+            newHeight = (int) (newWidth * (1F / aspectRatio));
+        }
+
+        // Compute the scaling factors to fit the new height and width, respectively.
+        // To cover the final image, the final scaling will be the bigger
+        // of these two.
+        float xScale = (float) newWidth / sourceWidth;
+        float yScale = (float) newHeight / sourceHeight;
+        float scale = Math.max(xScale, yScale);
+
+        // Now get the size of the source bitmap when scaled
+        float scaledWidth = scale * sourceWidth;
+        float scaledHeight = scale * sourceHeight;
+
+        // Let's find out the upper left coordinates if the scaled bitmap
+        // should be centered in the new size give by the parameters
+        float left = (newWidth - scaledWidth) / 2;
+        float top = (newHeight - scaledHeight) / 2;
+
+        // The target rectangle for the new, scaled version of the source bitmap will now be
+        RectF targetRect = new RectF(left, top, left + scaledWidth, top + scaledHeight);
+
+        // Finally, we create a new bitmap of the specified size and draw our new,
+        // scaled bitmap onto it.
+        Bitmap scaledBitmap = Bitmap.createBitmap(newWidth, newHeight,
+            this.currentRepresentation.getConfig());
+        Canvas canvas = new Canvas(scaledBitmap);
+        canvas.drawBitmap(this.currentRepresentation, null, targetRect, null);
+        this.currentRepresentation = scaledBitmap;
     }
 
     public void mirrorImage() throws ImageMutationFailedException {
@@ -41,18 +93,12 @@ public class MutableImage {
 
         m.preScale(-1, 1);
 
-        Bitmap bitmap = Bitmap.createBitmap(
-                currentRepresentation,
-                0,
-                0,
-                currentRepresentation.getWidth(),
-                currentRepresentation.getHeight(),
-                m,
-                false
-        );
+        Bitmap bitmap = Bitmap.createBitmap(currentRepresentation, 0, 0,
+            currentRepresentation.getWidth(), currentRepresentation.getHeight(), m, false);
 
-        if (bitmap == null)
+        if (bitmap == null) {
             throw new ImageMutationFailedException("failed to mirror");
+        }
 
         this.currentRepresentation = bitmap;
     }
@@ -61,12 +107,13 @@ public class MutableImage {
         try {
             Metadata metadata = originalImageMetaData();
 
-            ExifIFD0Directory exifIFD0Directory = metadata.getFirstDirectoryOfType(ExifIFD0Directory.class);
+            ExifIFD0Directory exifIFD0Directory = metadata.getFirstDirectoryOfType(
+                ExifIFD0Directory.class);
             if (exifIFD0Directory == null) {
                 return;
             } else if (exifIFD0Directory.containsTag(ExifIFD0Directory.TAG_ORIENTATION)) {
                 int exifOrientation = exifIFD0Directory.getInt(ExifIFD0Directory.TAG_ORIENTATION);
-                if(exifOrientation != 1) {
+                if (exifOrientation != 1) {
                     rotate(exifOrientation);
                     exifIFD0Directory.setInt(ExifIFD0Directory.TAG_ORIENTATION, 1);
                 }
@@ -110,18 +157,13 @@ public class MutableImage {
                 break;
         }
 
-        Bitmap transformedBitmap = Bitmap.createBitmap(
-                currentRepresentation,
-                0,
-                0,
-                currentRepresentation.getWidth(),
-                currentRepresentation.getHeight(),
-                bitmapMatrix,
-                false
-        );
+        Bitmap transformedBitmap = Bitmap.createBitmap(currentRepresentation, 0, 0,
+            currentRepresentation.getWidth(), currentRepresentation.getHeight(), bitmapMatrix,
+            false);
 
-        if (transformedBitmap == null)
+        if (transformedBitmap == null) {
             throw new ImageMutationFailedException("failed to rotate");
+        }
 
         this.currentRepresentation = transformedBitmap;
         this.hasBeenReoriented = true;
@@ -139,10 +181,12 @@ public class MutableImage {
     }
 
     public String toBase64(int jpegQualityPercent) {
-        return Base64.encodeToString(toJpeg(currentRepresentation, jpegQualityPercent), Base64.DEFAULT);
+        return Base64.encodeToString(toJpeg(currentRepresentation, jpegQualityPercent),
+            Base64.DEFAULT);
     }
 
-    public void writeDataToFile(File file, ReadableMap options, int jpegQualityPercent) throws IOException {
+    public void writeDataToFile(File file, ReadableMap options, int jpegQualityPercent)
+        throws IOException {
         FileOutputStream fos = new FileOutputStream(file);
         fos.write(toJpeg(currentRepresentation, jpegQualityPercent));
         fos.close();
@@ -162,30 +206,35 @@ public class MutableImage {
 
             writeLocationExifData(options, exif);
 
-            if(hasBeenReoriented)
+            if (hasBeenReoriented) {
                 rewriteOrientation(exif);
+            }
 
             exif.saveAttributes();
-        } catch (ImageProcessingException  | IOException e) {
+        } catch (ImageProcessingException | IOException e) {
             Log.e(TAG, "failed to save exif data", e);
         }
     }
 
     private void rewriteOrientation(ExifInterface exif) {
-        exif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(ExifInterface.ORIENTATION_NORMAL));
+        exif.setAttribute(ExifInterface.TAG_ORIENTATION,
+            String.valueOf(ExifInterface.ORIENTATION_NORMAL));
     }
 
     private void writeLocationExifData(ReadableMap options, ExifInterface exif) {
-        if(!options.hasKey("metadata"))
+        if (!options.hasKey("metadata")) {
             return;
+        }
 
         ReadableMap metadata = options.getMap("metadata");
-        if (!metadata.hasKey("location"))
+        if (!metadata.hasKey("location")) {
             return;
+        }
 
         ReadableMap location = metadata.getMap("location");
-        if(!location.hasKey("coords"))
+        if (!location.hasKey("coords")) {
             return;
+        }
 
         try {
             ReadableMap coords = location.getMap("coords");
@@ -199,11 +248,10 @@ public class MutableImage {
     }
 
     private Metadata originalImageMetaData() throws ImageProcessingException, IOException {
-        if(this.originalImageMetaData == null) {//this is expensive, don't do it more than once
+        if (this.originalImageMetaData == null) {//this is expensive, don't do it more than once
             originalImageMetaData = ImageMetadataReader.readMetadata(
-                    new BufferedInputStream(new ByteArrayInputStream(originalImageData)),
-                    originalImageData.length
-            );
+                new BufferedInputStream(new ByteArrayInputStream(originalImageData)),
+                originalImageData.length);
         }
         return originalImageMetaData;
     }
@@ -234,7 +282,8 @@ public class MutableImage {
     }
 
     private static class GPS {
-        public static void writeExifData(double latitude, double longitude, ExifInterface exif) throws IOException {
+        public static void writeExifData(double latitude, double longitude, ExifInterface exif)
+            throws IOException {
             exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE, toDegreeMinuteSecods(latitude));
             exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, latitudeRef(latitude));
             exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, toDegreeMinuteSecods(longitude));
