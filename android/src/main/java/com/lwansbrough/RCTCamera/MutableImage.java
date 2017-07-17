@@ -35,11 +35,9 @@ public class MutableImage {
     public MutableImage(byte[] originalImageData, int deviceOrientation) {
         this.originalImageData = originalImageData;
         this.currentRepresentation = toBitmap(originalImageData);
-
-        scaleImage(deviceOrientation);
     }
 
-    private void scaleImage(int deviceOrientation) {
+    public void scaleImage(int deviceOrientation) {
         final int sourceWidth = this.currentRepresentation.getWidth();
         final int sourceHeight = this.currentRepresentation.getHeight();
         // Check device rotation
